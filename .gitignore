@@ -1,0 +1,8 @@
+# Recreated by make generate / Docker build
+/internal/api/*.gen.go
+/bin/
+.env
+.env.jwt
+.keys/
+*.log
+/coverage.out

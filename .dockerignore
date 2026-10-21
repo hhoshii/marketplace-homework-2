@@ -1,0 +1,7 @@
+.git
+.env
+.env.jwt
+.keys
+bin
+**/*.gen.go
+**/*.log

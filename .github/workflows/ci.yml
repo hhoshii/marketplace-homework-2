@@ -1,0 +1,23 @@
+name: checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - run: make test
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - run: cp .env.example .env
+      - run: docker compose up --build -d --wait
+      - run: make e2e
+      - run: python3 scripts/check-service-isolation.py
+      - run: docker compose logs --no-color
+        if: failure()
+      - run: docker compose down
+        if: always()

@@ -1,6 +1,105 @@
 services:
-  catalog-service:
+  db:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Create .env from .env.example}
+      USERS_DB_PASSWORD: ${USERS_DB_PASSWORD:?Set USERS_DB_PASSWORD}
+      COMMERCE_DB_PASSWORD: ${COMMERCE_DB_PASSWORD:?Set COMMERCE_DB_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d commerce -h 127.0.0.1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  users-migrate:
+    image: redgate/flyway:11.8.2
+    platform: linux/amd64
+    command: ["-connectRetries=30", "migrate"]
+    environment:
+      FLYWAY_URL: jdbc:postgresql://db:5432/users
+      FLYWAY_USER: users
+      FLYWAY_PASSWORD: ${USERS_DB_PASSWORD}
+      FLYWAY_CLEAN_DISABLED: "true"
+    volumes:
+      - ./db/users/migration:/flyway/sql:ro
+    depends_on:
+      db:
+        condition: service_healthy
+  commerce-migrate:
+    image: redgate/flyway:11.8.2
+    platform: linux/amd64
+    command: ["-connectRetries=30", "migrate"]
+    environment:
+      FLYWAY_URL: jdbc:postgresql://db:5432/commerce
+      FLYWAY_USER: commerce
+      FLYWAY_PASSWORD: ${COMMERCE_DB_PASSWORD}
+      FLYWAY_CLEAN_DISABLED: "true"
+    volumes:
+      - ./db/commerce/migration:/flyway/sql:ro
+    depends_on:
+      db:
+        condition: service_healthy
+  user-service:
     build:
-      context: ./services/catalog-service
+      context: .
+      target: user-service
+    environment:
+      DATABASE_URL: postgres://users:${USERS_DB_PASSWORD}@db:5432/users?sslmode=disable
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?Set JWT_PRIVATE_KEY}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+    depends_on:
+      users-migrate:
+        condition: service_completed_successfully
+  commerce-service:
+    build:
+      context: .
+      target: commerce-service
+    environment:
+      DATABASE_URL: postgres://commerce:${COMMERCE_DB_PASSWORD}@db:5432/commerce?sslmode=disable
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?Set JWT_PUBLIC_KEY}
+      ORDER_INTERVAL: ${ORDER_INTERVAL:-1m}
+    depends_on:
+      commerce-migrate:
+        condition: service_completed_successfully
+  gateway:
+    build:
+      context: .
+      target: gateway
+    environment:
+      USER_SERVICE_URL: http://user-service:8080
+      COMMERCE_SERVICE_URL: http://commerce-service:8080
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      user-service:
+        condition: service_healthy
+      commerce-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  e2e:
+    image: golang:1.27.3
+    profiles: ["test"]
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      TEST_USERS_DATABASE_URL: postgres://users:${USERS_DB_PASSWORD}@db:5432/users?sslmode=disable
+      TEST_COMMERCE_DATABASE_URL: postgres://commerce:${COMMERCE_DB_PASSWORD}@db:5432/commerce?sslmode=disable
+      TEST_BASE_URL: http://gateway:8080
+      TEST_USERS_SERVICE_URL: http://user-service:8080
+      TEST_COMMERCE_SERVICE_URL: http://commerce-service:8080
+    command: ["make", "integration"]
+    depends_on:
+      gateway:
+        condition: service_healthy
+volumes:
+  pg-data:
+  go-mod-cache:
